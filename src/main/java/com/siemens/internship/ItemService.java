@@ -6,17 +6,48 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.*;
+import java.util.stream.Collectors;
 
 @Service
 public class ItemService {
+
     @Autowired
     private ItemRepository itemRepository;
-    private static ExecutorService executor = Executors.newFixedThreadPool(10);
-    private List<Item> processedItems = new ArrayList<>();
-    private int processedCount = 0;
 
+    private static final ExecutorService executor = Executors.newFixedThreadPool(10);
+
+    /**
+     * Process all items asynchronously and return successfully processed items
+     */
+    public CompletableFuture<List<Item>> processItemsAsync() {
+        List<Long> ids = itemRepository.findAllIds();
+        List<CompletableFuture<Item>> futures = new ArrayList<>();
+
+        for (Long id : ids) {
+            futures.add(
+                    CompletableFuture.supplyAsync(() -> {
+                        Optional<Item> optionalItem = itemRepository.findById(id);
+                        if (optionalItem.isEmpty()) return null;
+
+                        Item item = optionalItem.get();
+                        item.setStatus("PROCESSED");
+                        return itemRepository.save(item);
+                    }, executor).exceptionally(ex -> {
+                        System.err.println("Failed to process item with ID: " + id + ", Error: " + ex.getMessage());
+                        return null;
+                    })
+            );
+        }
+
+        return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                .thenApply(v -> futures.stream()
+                        .map(CompletableFuture::join)
+                        .filter(Objects::nonNull)
+                        .collect(Collectors.toList()));
+    }
 
     public List<Item> findAll() {
         return itemRepository.findAll();
@@ -33,55 +64,6 @@ public class ItemService {
     public void deleteById(Long id) {
         itemRepository.deleteById(id);
     }
-
-
-    /**
-     * Your Tasks
-     * Identify all concurrency and asynchronous programming issues in the code
-     * Fix the implementation to ensure:
-     * All items are properly processed before the CompletableFuture completes
-     * Thread safety for all shared state
-     * Proper error handling and propagation
-     * Efficient use of system resources
-     * Correct use of Spring's @Async annotation
-     * Add appropriate comments explaining your changes and why they fix the issues
-     * Write a brief explanation of what was wrong with the original implementation
-     *
-     * Hints
-     * Consider how CompletableFuture composition can help coordinate multiple async operations
-     * Think about appropriate thread-safe collections
-     * Examine how errors are handled and propagated
-     * Consider the interaction between Spring's @Async and CompletableFuture
-     */
-    @Async
-    public List<Item> processItemsAsync() {
-
-        List<Long> itemIds = itemRepository.findAllIds();
-
-        for (Long id : itemIds) {
-            CompletableFuture.runAsync(() -> {
-                try {
-                    Thread.sleep(100);
-
-                    Item item = itemRepository.findById(id).orElse(null);
-                    if (item == null) {
-                        return;
-                    }
-
-                    processedCount++;
-
-                    item.setStatus("PROCESSED");
-                    itemRepository.save(item);
-                    processedItems.add(item);
-
-                } catch (InterruptedException e) {
-                    System.out.println("Error: " + e.getMessage());
-                }
-            }, executor);
-        }
-
-        return processedItems;
-    }
-
 }
+
 
