@@ -2,12 +2,10 @@ package com.siemens.internship.service;
 
 import com.siemens.internship.model.Item;
 import com.siemens.internship.repository.ItemRepository;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
+import java.util.concurrent.CompletableFuture;
 import java.util.List;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
@@ -15,38 +13,44 @@ import java.util.stream.Collectors;
 @Service
 public class ItemService {
 
-    @Autowired
-    private ItemRepository itemRepository;
+    private final ItemRepository itemRepository;
+
+    public ItemService(ItemRepository itemRepository){
+        this.itemRepository = itemRepository;
+    }
 
     private static final ExecutorService executor = Executors.newFixedThreadPool(10);
 
     /**
-     * Process all items asynchronously and return successfully processed items
+     * Asynchronously processes all items by retrieving, updating status,
+     * and saving each one. Tracks and returns successfully processed items.
+     *
+     * @return CompletableFuture containing a list of successfully processed items.
      */
     public CompletableFuture<List<Item>> processItemsAsync() {
         List<Long> ids = itemRepository.findAllIds();
-        List<CompletableFuture<Item>> futures = new ArrayList<>();
 
-        for (Long id : ids) {
-            futures.add(
-                    CompletableFuture.supplyAsync(() -> {
-                        Optional<Item> optionalItem = itemRepository.findById(id);
-                        if (optionalItem.isEmpty()) return null;
-
-                        Item item = optionalItem.get();
-                        item.setStatus("PROCESSED");
-                        return itemRepository.save(item);
-                    }, executor).exceptionally(ex -> {
-                        System.err.println("Failed to process item with ID: " + id + ", Error: " + ex.getMessage());
-                        return null;
-                    })
-            );
-        }
+        List<CompletableFuture<Optional<Item>>> futures = ids.stream()
+                .map(id -> CompletableFuture.supplyAsync(() -> {
+                    try {
+                        Optional<Item> itemOpt = itemRepository.findById(id);
+                        if (itemOpt.isPresent()) {
+                            Item item = itemOpt.get();
+                            item.setStatus("PROCESSED");
+                            return Optional.of(itemRepository.save(item));
+                        }
+                    } catch (Exception e) {
+                        System.err.println("Error processing item ID " + id + ": " + e.getMessage());
+                    }
+                    return Optional.<Item>empty(); // <-- Explicitly typed
+                }, executor))
+                .collect(Collectors.toList()); // Use collect instead of toList() for full type inference
 
         return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
                 .thenApply(v -> futures.stream()
                         .map(CompletableFuture::join)
-                        .filter(Objects::nonNull)
+                        .filter(Optional::isPresent)
+                        .map(Optional::get)
                         .collect(Collectors.toList()));
     }
 
@@ -66,5 +70,3 @@ public class ItemService {
         itemRepository.deleteById(id);
     }
 }
-
-

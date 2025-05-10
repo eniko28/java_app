@@ -1,111 +1,130 @@
 package com.siemens.internship;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.siemens.internship.model.Item;
 import com.siemens.internship.repository.ItemRepository;
-import com.siemens.internship.service.ItemService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.hamcrest.Matchers.*;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
+@SpringBootTest
+@AutoConfigureMockMvc
 public class ItemServiceTest {
 
-    @Mock
+    @Autowired
+    private MockMvc mockMvc;
+
+    @MockBean
     private ItemRepository itemRepository;
 
-    @InjectMocks
-    private ItemService itemService;
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    private Item sampleItem;
 
     @BeforeEach
-    void setUp() {
-        MockitoAnnotations.openMocks(this);
+    void setup() {
+        sampleItem = new Item(1L, "Test Item", "Sample description", "NEW", "test@example.com");
     }
 
     @Test
-    void testFindAll() {
-        Item item1 = new Item(1L, "Item1", "Desc1", "NEW", "email1@example.com");
-        Item item2 = new Item(2L, "Item2", "Desc2", "NEW", "email2@example.com");
+    void shouldCreateValidItem() throws Exception {
+        when(itemRepository.save(any(Item.class))).thenReturn(sampleItem);
 
-        when(itemRepository.findAll()).thenReturn(Arrays.asList(item1, item2));
-
-        List<Item> result = itemService.findAll();
-
-        assertEquals(2, result.size());
-        assertEquals("Item1", result.get(0).getName());
+        mockMvc.perform(post("/api/items")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(sampleItem)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.name", is("Test Item")))
+                .andExpect(jsonPath("$.email", is("test@example.com")));
     }
 
     @Test
-    void testFindByIdFound() {
-        Item item = new Item(1L, "Item1", "Desc1", "NEW", "email@example.com");
-        when(itemRepository.findById(1L)).thenReturn(Optional.of(item));
+    void shouldRejectInvalidEmail() throws Exception {
+        sampleItem.setEmail("invalid_email");
 
-        Optional<Item> result = itemService.findById(1L);
-
-        assertTrue(result.isPresent());
-        assertEquals("Item1", result.get().getName());
+        mockMvc.perform(post("/api/items")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(sampleItem)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$[0].defaultMessage", containsString("valid")));
     }
 
     @Test
-    void testFindByIdNotFound() {
+    void shouldReturnAllItems() throws Exception {
+        when(itemRepository.findAll()).thenReturn(List.of(sampleItem));
+
+        mockMvc.perform(get("/api/items"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].name", is("Test Item")));
+    }
+
+    @Test
+    void shouldReturnItemById() throws Exception {
+        when(itemRepository.findById(1L)).thenReturn(Optional.of(sampleItem));
+
+        mockMvc.perform(get("/api/items/1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name", is("Test Item")));
+    }
+
+    @Test
+    void shouldReturnNotFoundForMissingItem() throws Exception {
         when(itemRepository.findById(1L)).thenReturn(Optional.empty());
 
-        Optional<Item> result = itemService.findById(1L);
-
-        assertTrue(result.isEmpty());
+        mockMvc.perform(get("/api/items/1"))
+                .andExpect(status().isNotFound());
     }
 
     @Test
-    void testSave() {
-        Item item = new Item(null, "NewItem", "NewDesc", "NEW", "valid@email.com");
-        Item saved = new Item(1L, "NewItem", "NewDesc", "NEW", "valid@email.com");
+    void shouldUpdateItem() throws Exception {
+        when(itemRepository.findById(1L)).thenReturn(Optional.of(sampleItem));
+        when(itemRepository.save(any(Item.class))).thenReturn(sampleItem);
 
-        when(itemRepository.save(item)).thenReturn(saved);
+        sampleItem.setDescription("Updated");
 
-        Item result = itemService.save(item);
-
-        assertNotNull(result.getId());
-        assertEquals("NewItem", result.getName());
+        mockMvc.perform(put("/api/items/1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(sampleItem)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.description", is("Updated")));
     }
 
     @Test
-    void testProcessItemsAsync() throws Exception {
-        // Setup dummy IDs and items
-        when(itemRepository.findAllIds()).thenReturn(Arrays.asList(1L, 2L));
-
-        Item item1 = new Item(1L, "Item1", "Desc", "NEW", "test1@email.com");
-        Item item2 = new Item(2L, "Item2", "Desc", "NEW", "test2@email.com");
-
-        when(itemRepository.findById(1L)).thenReturn(Optional.of(item1));
-        when(itemRepository.findById(2L)).thenReturn(Optional.of(item2));
-
-        when(itemRepository.save(any(Item.class))).thenAnswer(invocation -> invocation.getArgument(0));
-
-        CompletableFuture<List<Item>> future = itemService.processItemsAsync();
-        List<Item> processedItems = future.get();
-
-        assertEquals(2, processedItems.size());
-        for (Item item : processedItems) {
-            assertEquals("PROCESSED", item.getStatus());
-        }
-
-        verify(itemRepository, times(2)).save(any(Item.class));
-    }
-
-    @Test
-    void testDeleteById() {
+    void shouldDeleteItem() throws Exception {
+        when(itemRepository.findById(1L)).thenReturn(Optional.of(sampleItem));
         doNothing().when(itemRepository).deleteById(1L);
 
-        itemService.deleteById(1L);
+        mockMvc.perform(delete("/api/items/1"))
+                .andExpect(status().isNoContent());
+    }
 
-        verify(itemRepository, times(1)).deleteById(1L);
+    @Test
+    void shouldProcessItemsAsync() throws Exception {
+        Item item2 = new Item(2L, "Item 2", "Desc", "NEW", "mail2@test.com");
+        when(itemRepository.findAllIds()).thenReturn(Arrays.asList(1L, 2L));
+        when(itemRepository.findById(1L)).thenReturn(Optional.of(sampleItem));
+        when(itemRepository.findById(2L)).thenReturn(Optional.of(item2));
+        when(itemRepository.save(any(Item.class))).thenAnswer(i -> i.getArguments()[0]);
+
+        mockMvc.perform(get("/api/items/process"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(2)))
+                .andExpect(jsonPath("$[0].status", is("PROCESSED")));
     }
 }
